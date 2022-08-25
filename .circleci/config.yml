@@ -15,18 +15,18 @@ workflows:
           paths:
             - /home/circleci/.cache/pypoetry/virtualenvs
     - node/install-packages
-      - run:
-          name: Install Terraform
-          command: |
-            sudo apt-get update && sudo apt-get install -y gnupg software-properties-common curl
-            sudo curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
-            sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
-            sudo apt-get update && sudo apt-get install -y terraform
-            terraform --install-autocomplete
-      - run:
-          name: Deploy Terraform Stack
-          command: |
-            cd infrastructure
-            ../node_modules/.bin/cdktf get
-            ../node_modules/.bin/cdktf deploy --auto-approve
-            poetry run python post_deploy.py
+    - run:
+        name: Install Terraform
+        command: |
+          sudo apt-get update && sudo apt-get install -y gnupg software-properties-common curl
+          sudo curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+          sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+          sudo apt-get update && sudo apt-get install -y terraform
+          terraform --install-autocomplete
+    - run:
+        name: Deploy Terraform Stack
+        command: |
+          cd infrastructure
+          ../node_modules/.bin/cdktf get
+          ../node_modules/.bin/cdktf deploy --auto-approve
+          poetry run python post_deploy.py
