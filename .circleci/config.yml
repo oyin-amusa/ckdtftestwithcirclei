@@ -1,0 +1,55 @@
+version: 2.1
+
+orbs:
+  aws-cli: circleci/aws-cli@2.0.6
+  aws-s3: circleci/aws-s3@3.0.0
+
+
+jobs:
+  deploy:
+      - run:
+          name: Install Python Dependencies
+          command: |
+            poetry install --no-interaction
+      - save_cache:
+          key: dependencies-{{ checksum "poetry.lock" }}
+          paths:
+            - /home/circleci/.cache/pypoetry/virtualenvs
+      - node/install-packages
+      - run:
+          name: Install Terraform
+          command: |
+            sudo apt-get update && sudo apt-get install -y gnupg software-properties-common curl
+            sudo curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+            sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+            sudo apt-get update && sudo apt-get install -y terraform
+            terraform --install-autocomplete
+      - run:
+          name: Deploy Terraform Stack
+          command: |
+            cd infrastructure
+            ../node_modules/.bin/cdktf get
+            ../node_modules/.bin/cdktf deploy --auto-approve
+            poetry run python post_deploy.py
+
+
+workflows:
+  deploy_infra:
+    jobs:
+    - terraform/validate:
+        checkout: true
+        context: terraform
+    - terraform/plan:
+        checkout: true
+        context: terraform
+        persist-workspace: true
+        requires:
+        - terraform/validate
+    - terraform/apply:
+        attach-workspace: true
+        context: terraform
+        filters:
+          branches:
+            only: master
+        requires:
+        - terraform/plan
