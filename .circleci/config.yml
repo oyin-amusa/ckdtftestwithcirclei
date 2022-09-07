@@ -1,5 +1,6 @@
-version: 2.1
+version: 2
 
+<<<<<<< HEAD
 orbs: 
   slack: circleci/slack@4.9.3
 
@@ -57,16 +58,17 @@ aliases:
         zip ../build.zip -r * .[^.]*
         echo "Build Successful !"
  
+=======
+>>>>>>> 700631d9765f0d7f332b6a4d86e5f216fa4c3ede
 jobs:
-  setup:
-   executor: app-executor
-   steps:
+  plan-apply:
+    working_directory: /tmp/project
+    docker:
+      - image: docker.mirror.hashicorp.services/hashicorp/terraform:light
+    steps:
       - checkout
-      - *show-current-branch
-      - *restore-cache
-      - *install-dependencies
-      - *save-cache
       - run:
+<<<<<<< HEAD
           name: Install Terraform
           command: |
           sudo apt-get update && sudo apt-get install -y gnupg software-properties-common curl
@@ -74,11 +76,18 @@ jobs:
           sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
           sudo apt-get update && sudo apt-get install -y terraform
           terraform --install-autocomplete
+=======
+          name: terraform init & plan
+          command: |
+            terraform init -input=false
+            terraform plan
+>>>>>>> 700631d9765f0d7f332b6a4d86e5f216fa4c3ede
       - persist_to_workspace:
-          root: ./
+          root: .
           paths:
-            - artifacts
+            - .
 
+<<<<<<< HEAD
   linting:
     executor: app-executor
     steps:
@@ -124,21 +133,31 @@ jobs:
           name: Terraform Apply
           command: |
              terraform apply --auto-approve 
-      - persist_to_workspace:
-          root: ./
-          paths:
-            - artifacts 
-  
-  deploy-to-aws-s3:
-    executor: app-executor
+=======
+  apply:
+    docker:
+      - image: docker.mirror.hashicorp.services/hashicorp/terraform:light
     steps:
-      - checkout
       - attach_workspace:
-          at: ./
-      - *show-current-branch
-      - *install-aws-cli
-      - *build-project
+          at: .
       - run:
+          name: terraform
+          command: |
+            terraform apply -auto-approve tfapply
+>>>>>>> 700631d9765f0d7f332b6a4d86e5f216fa4c3ede
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  plan-destroy:
+    docker:
+      - image: docker.mirror.hashicorp.services/hashicorp/terraform:light
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+<<<<<<< HEAD
           name: Deploy to AWS S3
           command: | 
             AWS_BUCKET_NAME=$(cat artifacts/{AMAZON_S3_bucket_name}.txt | sed 's/\"//g')
@@ -247,71 +266,45 @@ jobs:
       #     template: basic_fail_1
 
  
+=======
+          name: terraform create destroy plan
+          command: |
+            terraform plan -destroy -out tfdestroy -var-file terraform.tfvars
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  destroy:
+    docker:
+      - image: docker.mirror.hashicorp.services/hashicorp/terraform:light
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: terraform destroy
+          command: |
+            terraform apply -auto-approve tfdestroy
+>>>>>>> 700631d9765f0d7f332b6a4d86e5f216fa4c3ede
 workflows:
-  build_and_deploy:
+  version: 2
+  plan_approve_apply:
     jobs:
-      - setup
-      - linting:
+      - plan-apply
+      - hold-apply:
+          type: approval
           requires:
-            - setup
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - prettify:
+            - plan-apply
+      - apply:
           requires:
-            - setup
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - terraform-validate:
+            - hold-apply
+      - plan-destroy:
           requires:
-            - linting
-            - prettify
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - terraform-plan-and-apply:
+            - apply
+      - hold-destroy:
+          type: approval
           requires:
-            - terraform-validate
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - deploy-to-aws-s3:
+            - plan-destroy
+      - destroy:
           requires:
-            - terraform-plan-and-apply
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - deploy-to-aws-cloudfront:
-          requires:
-            - deploy-to-aws-s3
-          filters:
-            branches:
-              only: 
-                - develop              
-                - staging
-                - master
-      - send-notification:
-          requires:
-            - deploy-to-aws-cloudfront
-          filters:
-            branches:
-              only:
-                - develop               
-                - staging
-                - master
+            - hold-destroy
