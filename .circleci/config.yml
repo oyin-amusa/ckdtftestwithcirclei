@@ -1,327 +1,81 @@
-version: 2.1
+version: 2
 
-orbs: 
-  slack: circleci/slack@4.9.3
-
-executors:
-  app-executor:
-    docker:
-      - image: circleci/node:14.18.1
-    working_directory: ~/repo
-  
-  slack-executor:
-    docker:
-      - image: 'cimg/base:stable'
-  
-  terraform-executor: 
-    docker:
-      - image: hashicorp/terraform:latest
-
-
-aliases:
-  - &show-current-branch
-    run:
-      name: Show current branch
-      command: echo ${CIRCLE_BRANCH}
-  - &restore-cache
-    restore_cache:
-      keys:
-        - app-{{ checksum "package.json" }}
-        - app-
-  - &install-dependencies
-    run:
-      name: Install Dependencies
-      command: |
-        mkdir -p artifacts
-        npm install
-  - &save-cache
-    save_cache:
-      paths:
-        - node_modules
-      key: app-{{ checksum "package.json" }}
-  - &install-aws-cli
-    run:
-      name: Installing AWS CLI
-      working_directory: /
-      command: |
-        sudo apt-get -y -qq update
-        sudo apt-get -y install awscli
-        sudo apt-get install -y python-pip python-dev build-essential
-  - &build-project
-    run:
-      name: Build Project
-      command: |
-        npm install
-        npm run build
-        cd build
-        zip ../build.zip -r * .[^.]*
-        echo "Build Successful !"
- 
 jobs:
-  setup:
-   executor: app-executor
-   steps:
+  plan-apply:
+    working_directory: /tmp/project
+    docker:
+      - image: docker.mirror.hashicorp.services/hashicorp/terraform:light
+    steps:
       - checkout
-      - *show-current-branch
-      - *restore-cache
-      - *install-dependencies
-      - *save-cache
       - run:
-          name: Copy Terraform folder
+          name: terraform init & plan
           command: |
-            sudo apt-get update && sudo apt-get install -y gnupg software-properties-common curl
-            sudo curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
-            sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
-            sudo apt-get update && sudo apt-get install -y terraform
-            terraform --install-autocomplete
-          
+            terraform init -input=false
+            terraform plan -out tfapply -var-file terraform.tfvars
       - persist_to_workspace:
-          root: ./
+          root: .
           paths:
-            - artifacts
+            - .
 
-  linting:
-    executor: app-executor
+  apply:
+    docker:
+      - image: docker.mirror.hashicorp.services/hashicorp/terraform:light
     steps:
-      - checkout
-      - *show-current-branch
-      - *restore-cache
-      - run:
-          name: Run Linting
-          command: npm run lint
-
-  prettify:
-    executor: app-executor
-    steps: 
-      - checkout
-      - *show-current-branch
-      - *restore-cache
-      - run:
-          name: Run Prettier
-          command: npm run prettify 
-
-  terraform-validate:
-    executor: terraform-executor
-    steps:
-      - checkout
-      - *show-current-branch
-      -  run:
-          name: Terraform Validate and Format
-          command: |
-             cd terraform/
-             terraform init -backend=false
-             terraform validate
-            #  terraform fmt -check
-  terraform-plan-and-apply:
-    executor: terraform-executor
-    steps:
-      - checkout
       - attach_workspace:
-          at: ./
-      - *show-current-branch
-      -  run:
-          name: Terraform Plan
+          at: .
+      - run:
+          name: terraform
           command: |
-             cd artifacts/terraform/
-             terraform init
-             terraform workspace select ${CIRCLE_BRANCH} || terraform workspace new ${CIRCLE_BRANCH}
-             terraform plan
-      -  run:
-          name: Terraform Apply
-          command: |
-             cd artifacts/terraform/
-             terraform workspace select ${CIRCLE_BRANCH}
-             terraform apply --auto-approve 
-             terraform output {AMAZON_S3_bucket_name} > ../{AMAZON_S3_bucket_name}.txt
-             terraform output cloudfront-distribution-id > ../cloudfront-distribution-id.txt
+            terraform apply -auto-approve tfapply
       - persist_to_workspace:
-          root: ./
+          root: .
           paths:
-            - artifacts 
-  
-  deploy-to-aws-s3:
-    executor: app-executor
-    steps:
-      - checkout
-      - attach_workspace:
-          at: ./
-      - *show-current-branch
-      - *install-aws-cli
-      - *build-project
-      - run:
-          name: Deploy to AWS S3
-          command: | 
-            AWS_BUCKET_NAME=$(cat artifacts/{AMAZON_S3_bucket_name}.txt | sed 's/\"//g')
-            echo $AWS_BUCKET_NAME
-            if [ "${CIRCLE_BRANCH}" == "master" ]
-            then 
-              aws --region ${AWS_REGION} s3 sync ~/repo/build s3://${AWS_BUCKET_NAME} --delete
-            elif [ "${CIRCLE_BRANCH}" == "staging" ]
-            then 
-              aws --region ${AWS_REGION} s3 sync ~/repo/build s3://${AWS_BUCKET_NAME} --delete
-            fi
-  
-  deploy-to-aws-cloudfront:
-    executor: app-executor
-    steps:
-      - checkout
-      - attach_workspace:
-          at: ./
-      - *show-current-branch
-      - *install-aws-cli
-      - *build-project
-      - run:
-          name: Deploy to AWS CloudFront
-          command: |
-            AWS_CLOUDFRONT_DISTRIBUTION_ID=$(cat artifacts/cloudfront-distribution-id.txt | sed 's/\"//g')
-            echo $AWS_CLOUDFRONT_DISTRIBUTION_ID
-            aws configure set preview.cloudfront true
-            if [ "${CIRCLE_BRANCH}" == "master" ]
-            then 
-              aws cloudfront create-invalidation --distribution-id ${AWS_CLOUDFRONT_DISTRIBUTION_ID} --path /\*
-            elif [ "${CIRCLE_BRANCH}" == "staging" ]
-            then 
-              aws cloudfront create-invalidation --distribution-id ${AWS_CLOUDFRONT_DISTRIBUTION_ID} --path /\*
-            fi
-  
-  send-notification:
-    executor: slack-executor
-    steps:
-      - run: echo "Sending Notification to Slack Channel"
-      - slack/notify:
-          event: 'pass'
-          channel: '{SLACK_CHANNEL_NAME}'
-          template: ''
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": {
-                    "type": "plain_text",
-                    "text": "Hurray 🎉 !!! Deployed ${CIRCLE_BRANCH} on servers!",
-                    "emoji": true
-                  }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Project:*\n$CIRCLE_PROJECT_REPONAME"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Branch:*\n$CIRCLE_BRANCH"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Deployed at:*\n$(date +'%m/%d/%Y %T')"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Build Number:*\n$CIRCLE_BUILD_NUM"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Author:*\n$CIRCLE_PROJECT_USERNAME"
-                    }
-                  ]
-                },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": {
-                        "type": "plain_text",
-                        "text": "View Job"  
-                      },
-                      "url": "${CIRCLE_BUILD_URL}"
-                    },
-                    {
-                      "type": "button",
-                      "text": {
-                        "type": "plain_text",
-                        "text": "View Project"  
-                      },
-                      "url": "{PROJECT_URL}"
-                    }
-                  ]
-                }
-              ]  
-            }
-      - slack/notify:
-          event: 'fail'
-          mentions: '{SLACK_USERNAME}'
-          template: basic_fail_1
+            - .
 
- 
+  plan-destroy:
+    docker:
+      - image: docker.mirror.hashicorp.services/hashicorp/terraform:light
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: terraform create destroy plan
+          command: |
+            terraform plan -destroy -out tfdestroy -var-file terraform.tfvars
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  destroy:
+    docker:
+      - image: docker.mirror.hashicorp.services/hashicorp/terraform:light
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: terraform destroy
+          command: |
+            terraform apply -auto-approve tfdestroy
 workflows:
-  build_and_deploy:
+  version: 2
+  plan_approve_apply:
     jobs:
-      - setup
-      - linting:
+      - plan-apply
+      - hold-apply:
+          type: approval
           requires:
-            - setup
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - prettify:
+            - plan-apply
+      - apply:
           requires:
-            - setup
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - terraform-validate:
+            - hold-apply
+      - plan-destroy:
           requires:
-            - linting
-            - prettify
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - terraform-plan-and-apply:
+            - apply
+      - hold-destroy:
+          type: approval
           requires:
-            - terraform-validate
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - deploy-to-aws-s3:
+            - plan-destroy
+      - destroy:
           requires:
-            - terraform-plan-and-apply
-          filters:
-            branches:
-              only:
-                - develop
-                - staging
-                - master
-      - deploy-to-aws-cloudfront:
-          requires:
-            - deploy-to-aws-s3
-          filters:
-            branches:
-              only: 
-                - develop              
-                - staging
-                - master
-      - send-notification:
-          requires:
-            - deploy-to-aws-cloudfront
-          filters:
-            branches:
-              only:
-                - develop               
-                - staging
-                - master
+            - hold-destroy
